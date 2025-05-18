@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebXR Dialog System</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; overflow:hidden; font-family:system-ui,sans-serif; background:#f0f2f5; }
+    #overlay { position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center; }
+    #start-button { padding:15px 30px;font-size:18px;background:#4876FF;color:#fff;border:none;border-radius:12px;cursor:pointer;transition:transform .2s; }
+    #start-button:hover { transform:translateY(-2px); }
+    #status { position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:#fff;padding:10px 20px;border-radius:8px;display:none; }
+    .exit-ar { position:fixed;top:20px;right:20px;width:44px;height:44px;border:none;border-radius:50%;background:rgba(0,0,0,.5);color:#fff;font-size:24px;cursor:pointer;display:none; }
+    .xr-active .exit-ar { display:flex;align-items:center;justify-content:center; }
+    video { display:none; }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <button id="start-button">Start Dialog Demo</button>
+  </div>
+  <button class="exit-ar" id="exit-ar">×</button>
+  <div id="status"></div>
+
+  <!-- Hidden video elements for portrait textures -->
+  <video id="hero-video" loop muted playsinline></video>
+  <video id="enemy-video" loop muted playsinline></video>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+
+    let camera, scene, renderer, controllers = [], xrSession, dialogSystem;
+
+    init();
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 20);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      window.addEventListener('resize', onWindowResize);
+      document.getElementById('start-button').addEventListener('click', startARSession);
+      document.getElementById('exit-ar').addEventListener('click', endARSession);
+
+      dialogSystem = new DialogSystem();
+    }
+
+    function startARSession() {
+      if (!navigator.xr) { showStatus('WebXR not supported'); return; }
+      navigator.xr.isSessionSupported('immersive-ar').then(supported => {
+        if (supported) {
+          navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['hand-tracking','dom-overlay'],
+            domOverlay: { root: document.body }
+          }).then(onSessionStarted)
+            .catch(err => showStatus('AR start failed: ' + err.message));
+        } else {
+          showStatus('AR not supported');
+        }
+      });
+    }
+
+    function onSessionStarted(session) {
+      xrSession = session;
+      renderer.xr.setSession(session);
+      document.getElementById('start-button').style.display = 'none';
+      document.body.classList.add('xr-active');
+
+      // Hand‐tracking spheres + select listeners
+      controllers = [0, 1].map(i => {
+        const c = renderer.xr.getController(i);
+        c.userData.isSelecting = false;
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(0.02, 8, 8),
+          new THREE.MeshBasicMaterial({ color: i === 0 ? 0x4876FF : 0xFF4848 })
+        );
+        c.add(sphere);
+        c.addEventListener('selectstart', onSelectStart);
+        c.addEventListener('selectend', onSelectEnd);
+        scene.add(c);
+        return c;
+      });
+
+      dialogSystem.init(scene, camera);
+      setTimeout(() => dialogSystem.start(), 1000);
+
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+
+      showStatus('Dialog ready! Use controller to advance.');
+    }
+
+    function endARSession() {
+      if (xrSession) xrSession.end();
+    }
+
+    function onSessionEnd() {
+      document.body.classList.remove('xr-active');
+      document.getElementById('start-button').style.display = 'flex';
+      document.getElementById('status').style.display = 'none';
+      controllers.forEach(c => scene.remove(c));
+      controllers = [];
+      renderer.setAnimationLoop(null);
+      xrSession = null;
+    }
+
+    // Raycast helpers
+    const raycaster = new THREE.Raycaster();
+    const tempMatrix = new THREE.Matrix4();
+
+    function onSelectStart(evt) {
+      const c = evt.target;
+      c.userData.isSelecting = true;
+      tempMatrix.identity().extractRotation(c.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(c.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      const hits = raycaster.intersectObjects(dialogSystem.interactables(), true);
+      if (hits.length > 0) {
+        let o = hits[0].object;
+        while (o && !o.userData.onClick) o = o.parent;
+        if (o && o.userData.onClick) o.userData.onClick();
+      }
+    }
+
+    function onSelectEnd(evt) {
+      evt.target.userData.isSelecting = false;
+    }
+
+    function render() {
+      dialogSystem.update();
+      renderer.render(scene, camera);
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function showStatus(msg) {
+      const s = document.getElementById('status');
+      s.textContent = msg;
+      s.style.display = 'block';
+      if (!/failed|not supported/i.test(msg)) {
+        setTimeout(() => s.style.display = 'none', 3000);
+      }
+    }
+
+    // --- DialogSystem class (simplified) ---
+    class DialogSystem {
+      constructor() {
+        this.group = null;
+        this.index = 0;
+        this.dialogs = [
+          { speaker: 'Hero', message: "I've finally found you!", color: '#4876FF' },
+          { speaker: 'Enemy', message: "You think you can stop me?", color: '#FF4848' },
+          { speaker: 'Hero', message: "Watch me!", color: '#4876FF' }
+        ];
+        this.videos = {};
+      }
+
+      init(scene, camera) {
+        this.scene = scene;
+        this.camera = camera;
+        this.group = new THREE.Group();
+        scene.add(this.group);
+
+        // Panel faces camera
+        this.group.position.set(0, 0, -0.5);
+
+        this._buildPanel();
+        this._loadVideos();
+      }
+
+      _loadVideos() {
+        ['hero','enemy'].forEach(name => {
+          const vid = document.getElementById(`${name}-video`);
+          vid.src = `${name}.mp4`;
+          const tex = new THREE.VideoTexture(vid);
+          this.videos[name] = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+        });
+      }
+
+      _buildPanel() {
+        // Background
+        const bg = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.6, 0.3),
+          new THREE.MeshBasicMaterial({ color: 0x0A0C10, opacity: 0.85, transparent: true })
+        );
+        this.group.add(bg);
+
+        // Portrait
+        this.portrait = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.15, 0.084),
+          new THREE.MeshBasicMaterial()
+        );
+        this.portrait.position.set(-0.22, 0.05, 0.001);
+        this.group.add(this.portrait);
+
+        // Name
+        const nameCanvas = document.createElement('canvas');
+        nameCanvas.width = 256; nameCanvas.height = 64;
+        this.nameCtx = nameCanvas.getContext('2d');
+        this.nameTex = new THREE.CanvasTexture(nameCanvas);
+        this.nameMesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.15, 0.04),
+          new THREE.MeshBasicMaterial({ map: this.nameTex, transparent: true })
+        );
+        this.nameMesh.position.set(-0.22, -0.06, 0.001);
+        this.group.add(this.nameMesh);
+
+        // Text
+        const txtCanvas = document.createElement('canvas');
+        txtCanvas.width = 512; txtCanvas.height = 256;
+        this.textCtx = txtCanvas.getContext('2d');
+        this.textTex = new THREE.CanvasTexture(txtCanvas);
+        this.textMesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.4, 0.2),
+          new THREE.MeshBasicMaterial({ map: this.textTex, transparent: true })
+        );
+        this.textMesh.position.set(0.05, 0, 0.001);
+        this.group.add(this.textMesh);
+
+        // Next button
+        const btnCanvas = document.createElement('canvas');
+        btnCanvas.width = 128; btnCanvas.height = 128;
+        const btnCtx = btnCanvas.getContext('2d');
+        this._drawButton(btnCtx, false);
+        const btnTex = new THREE.CanvasTexture(btnCanvas);
+        this.btnMesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.05, 0.05),
+          new THREE.MeshBasicMaterial({ map: btnTex, transparent: true, depthTest: false })
+        );
+        this.btnMesh.position.set(0.25, -0.11, 0.002);
+        this.btnMesh.userData.onClick = () => {
+          this._next();
+          this._drawButton(btnCtx, true);
+          btnTex.needsUpdate = true;
+          setTimeout(() => {
+            this._drawButton(btnCtx, false);
+            btnTex.needsUpdate = true;
+          }, 200);
+        };
+        this.group.add(this.btnMesh);
+      }
+
+      _drawButton(ctx, hover) {
+        ctx.clearRect(0, 0, 128, 128);
+        ctx.beginPath();
+        ctx.arc(64, 64, 64, 0, 2*Math.PI);
+        ctx.fillStyle = hover ? '#5993FF' : '#4876FF';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(44, 44);
+        ctx.lineTo(84, 64);
+        ctx.lineTo(44, 84);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+      }
+
+      start() {
+        this.index = 0;
+        this._show();
+      }
+
+      _show() {
+        const d = this.dialogs[this.index];
+        this.portrait.material = this.videos[d.speaker.toLowerCase()] || this.portrait.material;
+        this._drawName(d.speaker, d.color);
+        this._drawText(d.message);
+      }
+
+      _next() {
+        this.index = (this.index + 1) % this.dialogs.length;
+        this._show();
+      }
+
+      _drawName(name, color) {
+        const ctx = this.nameCtx, w = 256, h = 64;
+        ctx.clearRect(0,0,w,h);
+        ctx.fillStyle = color;
+        ctx.fillRect(0,0,w,h);
+        ctx.font = 'bold 32px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(name, w/2, h/2);
+        this.nameTex.needsUpdate = true;
+      }
+
+      _drawText(text) {
+        const ctx = this.textCtx, w = 512, h = 256;
+        ctx.clearRect(0,0,w,h);
+        ctx.font = '24px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.textBaseline = 'top';
+        const words = text.split(' '), maxWidth = w - 40;
+        let line = '', y = 20;
+        for (let word of words) {
+          const test = line + word + ' ';
+          if (ctx.measureText(test).width > maxWidth) {
+            ctx.fillText(line, 20, y);
+            line = word + ' ';
+            y += 28;
+          } else {
+            line = test;
+          }
+        }
+        ctx.fillText(line, 20, y);
+        this.textTex.needsUpdate = true;
+      }
+
+      update() {
+        if (!xrSession) return;
+        const dir = new THREE.Vector3(0,0,-1).applyQuaternion(this.camera.quaternion);
+        this.group.position.copy(this.camera.position).add(dir.multiplyScalar(0.7));
+        this.group.lookAt(this.camera.position);
+      }
+
+      interactables() {
+        return [this.btnMesh];
+      }
+    }
+  </script>
+</body>
+</html>
