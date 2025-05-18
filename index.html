@@ -31,7 +31,7 @@
 
     let camera, scene, renderer, controllers = [], xrSession, dialogSystem;
 
-    init();
+    document.addEventListener('DOMContentLoaded', init);
 
     function init() {
       scene = new THREE.Scene();
@@ -45,8 +45,6 @@
       window.addEventListener('resize', onWindowResize);
       document.getElementById('start-button').addEventListener('click', startARSession);
       document.getElementById('exit-ar').addEventListener('click', endARSession);
-
-      dialogSystem = new DialogSystem();
     }
 
     function startARSession() {
@@ -57,8 +55,9 @@
             requiredFeatures: ['hit-test'],
             optionalFeatures: ['hand-tracking','dom-overlay'],
             domOverlay: { root: document.body }
-          }).then(onSessionStarted)
-            .catch(err => showStatus('AR start failed: ' + err.message));
+          })
+          .then(onSessionStarted)
+          .catch(err => showStatus('AR start failed: ' + err.message));
         } else {
           showStatus('AR not supported');
         }
@@ -70,6 +69,10 @@
       renderer.xr.setSession(session);
       document.getElementById('start-button').style.display = 'none';
       document.body.classList.add('xr-active');
+
+      // Instantiate here so dialogSystem is never undefined
+      dialogSystem = new DialogSystem();
+      dialogSystem.init(scene, camera);
 
       // Hand‐tracking spheres + select listeners
       controllers = [0, 1].map(i => {
@@ -86,12 +89,9 @@
         return c;
       });
 
-      dialogSystem.init(scene, camera);
       setTimeout(() => dialogSystem.start(), 1000);
-
       renderer.setAnimationLoop(render);
       session.addEventListener('end', onSessionEnd);
-
       showStatus('Dialog ready! Use controller to advance.');
     }
 
@@ -109,7 +109,6 @@
       xrSession = null;
     }
 
-    // Raycast helpers
     const raycaster = new THREE.Raycaster();
     const tempMatrix = new THREE.Matrix4();
 
@@ -152,11 +151,10 @@
       }
     }
 
-    // --- DialogSystem class (simplified) ---
+    // --- DialogSystem class (same as before) ---
     class DialogSystem {
       constructor() {
-        this.group = null;
-        this.index = 0;
+        this.group = null; this.index = 0;
         this.dialogs = [
           { speaker: 'Hero', message: "I've finally found you!", color: '#4876FF' },
           { speaker: 'Enemy', message: "You think you can stop me?", color: '#FF4848' },
@@ -166,14 +164,10 @@
       }
 
       init(scene, camera) {
-        this.scene = scene;
-        this.camera = camera;
+        this.scene = scene; this.camera = camera;
         this.group = new THREE.Group();
         scene.add(this.group);
-
-        // Panel faces camera
         this.group.position.set(0, 0, -0.5);
-
         this._buildPanel();
         this._loadVideos();
       }
@@ -188,14 +182,12 @@
       }
 
       _buildPanel() {
-        // Background
         const bg = new THREE.Mesh(
           new THREE.PlaneGeometry(0.6, 0.3),
           new THREE.MeshBasicMaterial({ color: 0x0A0C10, opacity: 0.85, transparent: true })
         );
         this.group.add(bg);
 
-        // Portrait
         this.portrait = new THREE.Mesh(
           new THREE.PlaneGeometry(0.15, 0.084),
           new THREE.MeshBasicMaterial()
@@ -203,7 +195,6 @@
         this.portrait.position.set(-0.22, 0.05, 0.001);
         this.group.add(this.portrait);
 
-        // Name
         const nameCanvas = document.createElement('canvas');
         nameCanvas.width = 256; nameCanvas.height = 64;
         this.nameCtx = nameCanvas.getContext('2d');
@@ -215,7 +206,6 @@
         this.nameMesh.position.set(-0.22, -0.06, 0.001);
         this.group.add(this.nameMesh);
 
-        // Text
         const txtCanvas = document.createElement('canvas');
         txtCanvas.width = 512; txtCanvas.height = 256;
         this.textCtx = txtCanvas.getContext('2d');
@@ -227,7 +217,6 @@
         this.textMesh.position.set(0.05, 0, 0.001);
         this.group.add(this.textMesh);
 
-        // Next button
         const btnCanvas = document.createElement('canvas');
         btnCanvas.width = 128; btnCanvas.height = 128;
         const btnCtx = btnCanvas.getContext('2d');
@@ -252,44 +241,26 @@
 
       _drawButton(ctx, hover) {
         ctx.clearRect(0, 0, 128, 128);
-        ctx.beginPath();
-        ctx.arc(64, 64, 64, 0, 2*Math.PI);
-        ctx.fillStyle = hover ? '#5993FF' : '#4876FF';
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(44, 44);
-        ctx.lineTo(84, 64);
-        ctx.lineTo(44, 84);
-        ctx.fillStyle = '#fff';
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(64, 64, 64, 0, 2*Math.PI);
+        ctx.fillStyle = hover ? '#5993FF' : '#4876FF'; ctx.fill();
+        ctx.beginPath(); ctx.moveTo(44, 44); ctx.lineTo(84, 64); ctx.lineTo(44, 84); ctx.fillStyle = '#fff'; ctx.fill();
       }
 
-      start() {
-        this.index = 0;
-        this._show();
-      }
-
+      start() { this.index = 0; this._show(); }
       _show() {
         const d = this.dialogs[this.index];
         this.portrait.material = this.videos[d.speaker.toLowerCase()] || this.portrait.material;
         this._drawName(d.speaker, d.color);
         this._drawText(d.message);
       }
-
-      _next() {
-        this.index = (this.index + 1) % this.dialogs.length;
-        this._show();
-      }
+      _next() { this.index = (this.index + 1) % this.dialogs.length; this._show(); }
 
       _drawName(name, color) {
         const ctx = this.nameCtx, w = 256, h = 64;
         ctx.clearRect(0,0,w,h);
-        ctx.fillStyle = color;
-        ctx.fillRect(0,0,w,h);
-        ctx.font = 'bold 32px sans-serif';
-        ctx.fillStyle = '#fff';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.fillStyle = color; ctx.fillRect(0,0,w,h);
+        ctx.font = 'bold 32px sans-serif'; ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(name, w/2, h/2);
         this.nameTex.needsUpdate = true;
       }
@@ -297,17 +268,13 @@
       _drawText(text) {
         const ctx = this.textCtx, w = 512, h = 256;
         ctx.clearRect(0,0,w,h);
-        ctx.font = '24px sans-serif';
-        ctx.fillStyle = '#fff';
-        ctx.textBaseline = 'top';
-        const words = text.split(' '), maxWidth = w - 40;
+        ctx.font = '24px sans-serif'; ctx.fillStyle = '#fff'; ctx.textBaseline = 'top';
+        const words = text.split(' '), maxW = w - 40;
         let line = '', y = 20;
         for (let word of words) {
           const test = line + word + ' ';
-          if (ctx.measureText(test).width > maxWidth) {
-            ctx.fillText(line, 20, y);
-            line = word + ' ';
-            y += 28;
+          if (ctx.measureText(test).width > maxW) {
+            ctx.fillText(line, 20, y); line = word + ' '; y += 28;
           } else {
             line = test;
           }
@@ -323,9 +290,7 @@
         this.group.lookAt(this.camera.position);
       }
 
-      interactables() {
-        return [this.btnMesh];
-      }
+      interactables() { return [this.btnMesh]; }
     }
   </script>
 </body>
